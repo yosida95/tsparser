@@ -123,3 +123,7 @@ func (s *Scanner) Bytes() []byte {
 
 	return nil
 }
+
+func (s *Scanner) Packet() Packet {
+	return Packet(s.Bytes())
+}
