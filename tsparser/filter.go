@@ -34,26 +34,29 @@ func (f *Filter) Scan() bool {
 		}
 
 		payload := packet.Payload()
-		if packet.payloadUnitStartIndicator() == 1 {
-			f.length = len(f.buffer)
-			packetStartCodePrefix := payload[0]<<16 | payload[1]<<8 | payload[2]
-			if packetStartCodePrefix == 0x000001 {
-				// Packetized Elementary Stream
+		if !packet.payloadUnitStartIndicator() {
+			if len(f.buffer) > 0 {
 				f.extendBuffer(payload)
-			} else {
-				// Program Specific Information
-				pointerField := payload[0]
-				f.length += int(pointerField)
-				f.extendBuffer(payload[1:])
 			}
-
-			if f.length == 0 {
-				return f.Scan()
-			}
-			return true
-		} else if len(f.buffer) > 0 {
-			f.extendBuffer(payload)
+			continue
 		}
+
+		f.length = len(f.buffer)
+		packetStartCodePrefix := payload[0]<<16 | payload[1]<<8 | payload[2]
+		if packetStartCodePrefix == 0x000001 {
+			// Packetized Elementary Stream
+			f.extendBuffer(payload)
+		} else {
+			// Program Specific Information
+			pointerField := payload[0]
+			f.length += int(pointerField)
+			f.extendBuffer(payload[1:])
+		}
+
+		if f.length == 0 {
+			return f.Scan()
+		}
+		return true
 	}
 
 	return false

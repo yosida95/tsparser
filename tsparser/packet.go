@@ -2,12 +2,12 @@ package tsparser
 
 type Packet []byte
 
-func (p Packet) transportErrorIndicator() uint8 {
-	return uint8(p[1]&0x80) >> 7
+func (p Packet) transportErrorIndicator() bool {
+	return uint8(p[1]&0x80)>>7 == 1
 }
 
-func (p Packet) payloadUnitStartIndicator() uint8 {
-	return uint8(p[1]&0x40) >> 6
+func (p Packet) payloadUnitStartIndicator() bool {
+	return uint8(p[1]&0x40)>>6 == 1
 }
 
 func (p Packet) transportPriority() uint8 {
