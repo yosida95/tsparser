@@ -1,5 +1,7 @@
 package tsparser
 
+type PID uint16
+
 type Packet []byte
 
 func (p Packet) transportErrorIndicator() bool {
@@ -14,8 +16,8 @@ func (p Packet) transportPriority() uint8 {
 	return uint8(p[1]&0x20) >> 5
 }
 
-func (p Packet) PID() uint16 {
-	return uint16(p[1]&0x1f)<<8 | uint16(p[2])
+func (p Packet) PID() PID {
+	return PID(p[1]&0x1f)<<8 | PID(p[2])
 }
 
 func (p Packet) transportScramblingControl() uint8 {

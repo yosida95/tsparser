@@ -62,12 +62,12 @@ func (b *filterBuffer) Bytes() []byte {
 
 type Filter struct {
 	s       *Scanner
-	pid     uint16
-	buffers map[uint16]*filterBuffer
+	pid     PID
+	buffers map[PID]*filterBuffer
 }
 
-func NewFilter(scanner *Scanner, pids ...uint16) *Filter {
-	buffers := make(map[uint16]*filterBuffer)
+func NewFilter(scanner *Scanner, pids ...PID) *Filter {
+	buffers := make(map[PID]*filterBuffer)
 	for _, pid := range pids {
 		buffers[pid] = new(filterBuffer)
 	}
