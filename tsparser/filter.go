@@ -1,70 +1,103 @@
 package tsparser
 
-type Filter struct {
-	s      *Scanner
-	pid    uint16
-	buffer []byte
+type filterBuffer struct {
+	ok     bool
+	data   []byte
 	length int
 }
 
-func NewFilter(scanner *Scanner, pid uint16) *Filter {
-	return &Filter{
-		s:      scanner,
-		pid:    pid,
-		length: 0,
-	}
+func (b *filterBuffer) extendData(right []byte) {
+	left := b.data
+	b.data = make([]byte, len(left)+len(right))
+	copy(b.data, left)
+	copy(b.data[len(left):], right)
 }
 
-func (f *Filter) extendBuffer(data []byte) {
-	buffer := f.buffer
-	f.buffer = make([]byte, len(buffer)+len(data))
-	copy(f.buffer, buffer)
-	copy(f.buffer[len(buffer):], data)
+func (b *filterBuffer) Extend(packet Packet) {
+	isFirst := len(b.data) == 0
+
+	payload := packet.Payload()
+	if !packet.payloadUnitStartIndicator() {
+		if !isFirst {
+			b.extendData(payload)
+		}
+		b.ok = false
+		return
+	}
+
+	if !isFirst {
+		b.data = b.data[b.length:]
+		b.length = len(b.data)
+		b.ok = true
+	}
+	packetStartCodePrefix := payload[0]<<16 | payload[1]<<8 | payload[2]
+	if packetStartCodePrefix == 0x000001 {
+		// Packetized Elementary Stream
+		b.extendData(payload)
+	} else {
+		// Program Specific Information
+		pointerField := int(payload[0])
+		if isFirst {
+			b.extendData(payload[1+pointerField:])
+		} else {
+			b.length += pointerField
+			b.extendData(payload[1:])
+		}
+	}
+
+	return
+}
+
+func (b *filterBuffer) OK() bool {
+	return b.ok
+}
+
+func (b *filterBuffer) Bytes() []byte {
+	if b.OK() {
+		return b.data[b.length:]
+	}
+
+	return nil
+}
+
+type Filter struct {
+	s       *Scanner
+	pid     uint16
+	buffers map[uint16]*filterBuffer
+}
+
+func NewFilter(scanner *Scanner, pids ...uint16) *Filter {
+	buffers := make(map[uint16]*filterBuffer)
+	for _, pid := range pids {
+		buffers[pid] = new(filterBuffer)
+	}
+
+	return &Filter{
+		s:       scanner,
+		buffers: buffers,
+	}
 }
 
 func (f *Filter) Scan() bool {
-	if f.length > 0 {
-		f.buffer = f.buffer[f.length:]
-	}
-
 	for f.s.Scan() {
 		packet := f.s.Packet()
-		if packet.PID() != f.pid {
-			continue
-		}
 
-		payload := packet.Payload()
-		if !packet.payloadUnitStartIndicator() {
-			if len(f.buffer) > 0 {
-				f.extendBuffer(payload)
+		if buffer, ok := f.buffers[packet.PID()]; ok {
+			buffer.Extend(packet)
+			if buffer.OK() {
+				f.pid = packet.PID()
+				return true
 			}
-			continue
 		}
-
-		f.length = len(f.buffer)
-		packetStartCodePrefix := payload[0]<<16 | payload[1]<<8 | payload[2]
-		if packetStartCodePrefix == 0x000001 {
-			// Packetized Elementary Stream
-			f.extendBuffer(payload)
-		} else {
-			// Program Specific Information
-			pointerField := payload[0]
-			f.length += int(pointerField)
-			f.extendBuffer(payload[1:])
-		}
-
-		if f.length == 0 {
-			return f.Scan()
-		}
-		return true
 	}
 
 	return false
 }
 
 func (f *Filter) Bytes() []byte {
-	if len(f.buffer) > f.length {
-		return f.buffer[:f.length]
+	buffer := f.buffers[f.pid]
+	if buffer.OK() {
+		return buffer.Bytes()
 	}
 
 	return nil
