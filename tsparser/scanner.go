@@ -129,63 +129,68 @@ func (s *PacketScanner) Packet() Packet {
 }
 
 type tableScannerBuffer struct {
-	ok     bool
-	data   []byte
-	length int
+	data    []byte
+	current []byte
+	isPES   bool
 }
 
-func (b *tableScannerBuffer) extendData(right []byte) {
-	left := b.data
-	b.data = make([]byte, len(left)+len(right))
-	copy(b.data, left)
-	copy(b.data[len(left):], right)
+func (b *tableScannerBuffer) extend(right []byte) {
+	n := len(b.data)
+	m := n + len(right)
+
+	if m > cap(b.data) {
+		newSlice := make([]byte, m*2)
+		copy(newSlice, b.data)
+		b.data = newSlice
+	}
+
+	b.data = b.data[0:m]
+	copy(b.data[n:m], right)
 }
 
-func (b *tableScannerBuffer) Extend(packet Packet) {
-	isFirst := len(b.data) == 0
+func (b *tableScannerBuffer) clear() {
+	b.data = make([]byte, 0, cap(b.data))
+}
 
-	payload := packet.Payload()
-	if !packet.payloadUnitStartIndicator() {
-		if !isFirst {
-			b.extendData(payload)
+func (b *tableScannerBuffer) freeze() {
+	b.current = make([]byte, len(b.data))
+	copy(b.current, b.data)
+}
+
+func (b *tableScannerBuffer) Begin(payload []byte) {
+	packetStartCodePrefix := payload[0]<<16 | payload[1]<<8 | payload[2]
+	b.isPES = packetStartCodePrefix == 0x000001
+
+	if b.isPES {
+		b.freeze()
+		b.clear()
+		b.extend(payload)
+	} else {
+		pointerField := int(payload[0])
+		if len(b.data) > 0 {
+			b.extend(payload[1 : 1+pointerField])
+			b.freeze()
 		}
-		b.ok = false
+
+		b.clear()
+		b.extend(payload[1+pointerField:])
+	}
+}
+
+func (b *tableScannerBuffer) Extend(payload []byte) {
+	if len(b.data) == 0 {
 		return
 	}
 
-	if !isFirst {
-		b.data = b.data[b.length:]
-		b.length = len(b.data)
-		b.ok = true
-	}
-	packetStartCodePrefix := payload[0]<<16 | payload[1]<<8 | payload[2]
-	if packetStartCodePrefix == 0x000001 {
-		// Packetized Elementary Stream
-		b.extendData(payload)
-	} else {
-		// Program Specific Information
-		pointerField := int(payload[0])
-		if isFirst {
-			b.extendData(payload[1+pointerField:])
-		} else {
-			b.length += pointerField
-			b.extendData(payload[1:])
-		}
-	}
-
-	return
+	b.extend(payload)
 }
 
-func (b *tableScannerBuffer) OK() bool {
-	return b.ok
+func (b *tableScannerBuffer) isFull() bool {
+	return len(b.current) > 0
 }
 
 func (b *tableScannerBuffer) Bytes() []byte {
-	if b.OK() {
-		return b.data[b.length:]
-	}
-
-	return nil
+	return b.current
 }
 
 type TableScanner struct {
@@ -195,42 +200,45 @@ type TableScanner struct {
 }
 
 func NewTableScanner(s PacketStream) *TableScanner {
-	buffers := make(map[PID]*tableScannerBuffer)
 	return &TableScanner{
 		s:       s,
-		buffers: buffers,
+		buffers: make(map[PID]*tableScannerBuffer),
 	}
 }
 
-func (f *TableScanner) Scan() bool {
-	for f.s.Scan() {
-		packet := f.s.Packet()
+func (s *TableScanner) Scan() bool {
+	for s.s.Scan() {
+		packet := s.s.Packet()
 
-		buffer, ok := f.buffers[packet.PID()]
+		buffer, ok := s.buffers[packet.PID()]
 		if !ok {
-			f.buffers[packet.PID()] = new(tableScannerBuffer)
-			buffer = f.buffers[packet.PID()]
+			s.buffers[packet.PID()] = new(tableScannerBuffer)
+			buffer = s.buffers[packet.PID()]
 		}
 
-		buffer.Extend(packet)
-		if buffer.OK() {
-			f.pid = packet.PID()
-			return true
+		if packet.payloadUnitStartIndicator() {
+			buffer.Begin(packet.Payload())
+			if buffer.isFull() {
+				s.pid = packet.PID()
+				return true
+			}
+		} else if ok {
+			buffer.Extend(packet.Payload())
 		}
 	}
 
 	return false
 }
 
-func (f *TableScanner) Bytes() []byte {
-	buffer := f.buffers[f.pid]
-	if buffer.OK() {
+func (s *TableScanner) Bytes() []byte {
+	buffer, ok := s.buffers[s.pid]
+	if ok && buffer.isFull() {
 		return buffer.Bytes()
 	}
 
 	return nil
 }
 
-func (f *TableScanner) Table() Table {
-	return Table(f.Bytes())
+func (s *TableScanner) Table() Table {
+	return Table(s.Bytes())
 }
