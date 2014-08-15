@@ -1,7 +1,14 @@
 package tsparser
 
 import (
+	"errors"
+	"fmt"
 	"io"
+	"log"
+)
+
+var (
+	ErrInvalidPointer = errors.New("Invalid value of pointer_field")
 )
 
 const (
@@ -17,20 +24,16 @@ type PacketScanner struct {
 	buffer [PacketSize * BufferedPacketCount]byte
 	seek   int
 	eof    bool
-	err    error
+	logger *log.Logger
 }
 
-func NewPacketScanner(r io.Reader) *PacketScanner {
+func NewPacketScanner(r io.Reader, logger *log.Logger) *PacketScanner {
 	return &PacketScanner{
-		r:    r,
-		seek: 0,
-		eof:  false,
-		err:  nil,
+		r:      r,
+		seek:   0,
+		eof:    false,
+		logger: logger,
 	}
-}
-
-func (s *PacketScanner) Err() error {
-	return s.err
 }
 
 func (s *PacketScanner) leftShift(n int) {
@@ -130,7 +133,7 @@ func (s *PacketScanner) Packet() Packet {
 
 type tableScannerBuffer struct {
 	data    []byte
-	current []byte
+	current Table
 	isPES   bool
 }
 
@@ -152,29 +155,44 @@ func (b *tableScannerBuffer) clear() {
 	b.data = make([]byte, 0, cap(b.data))
 }
 
-func (b *tableScannerBuffer) freeze() {
-	b.current = make([]byte, len(b.data))
-	copy(b.current, b.data)
+func (b *tableScannerBuffer) freeze() (err error) {
+	if len(b.data) > 0 {
+		table := make(Table, len(b.data))
+		copy(table, b.data)
+		if err = table.validate(); err != nil {
+			return
+		}
+
+		b.current = table
+	}
+
+	return
 }
 
-func (b *tableScannerBuffer) Begin(payload []byte) {
+func (b *tableScannerBuffer) Begin(payload []byte) (err error) {
 	packetStartCodePrefix := payload[0]<<16 | payload[1]<<8 | payload[2]
 	b.isPES = packetStartCodePrefix == 0x000001
 
-	if b.isPES {
-		b.freeze()
-		b.clear()
-		b.extend(payload)
-	} else {
+	if !b.isPES {
 		pointerField := int(payload[0])
-		if len(b.data) > 0 {
-			b.extend(payload[1 : 1+pointerField])
-			b.freeze()
+		if pointerField > 182 {
+			b.clear()
+
+			err = ErrInvalidPointer
+			return
 		}
 
-		b.clear()
-		b.extend(payload[1+pointerField:])
+		if len(b.data) > 0 {
+			b.extend(payload[1 : 1+pointerField])
+		}
+		payload = payload[1+pointerField:]
+
 	}
+
+	err = b.freeze()
+	b.clear()
+	b.extend(payload)
+	return
 }
 
 func (b *tableScannerBuffer) Extend(payload []byte) {
@@ -189,7 +207,7 @@ func (b *tableScannerBuffer) isFull() bool {
 	return len(b.current) > 0
 }
 
-func (b *tableScannerBuffer) Bytes() []byte {
+func (b *tableScannerBuffer) Table() Table {
 	return b.current
 }
 
@@ -197,18 +215,23 @@ type TableScanner struct {
 	s       PacketStream
 	pid     PID
 	buffers map[PID]*tableScannerBuffer
+	logger  *log.Logger
 }
 
-func NewTableScanner(s PacketStream) *TableScanner {
+func NewTableScanner(s PacketStream, l *log.Logger) *TableScanner {
 	return &TableScanner{
 		s:       s,
 		buffers: make(map[PID]*tableScannerBuffer),
+		logger:  l,
 	}
 }
 
 func (s *TableScanner) Scan() bool {
 	for s.s.Scan() {
 		packet := s.s.Packet()
+		if !packet.HasPayload() {
+			continue
+		}
 
 		buffer, ok := s.buffers[packet.PID()]
 		if !ok {
@@ -217,9 +240,18 @@ func (s *TableScanner) Scan() bool {
 		}
 
 		if packet.payloadUnitStartIndicator() {
-			buffer.Begin(packet.Payload())
+			if err := buffer.Begin(packet.Payload()); err != nil {
+				if s.logger != nil {
+					s.logger.Println(
+						fmt.Sprintf("pid = 0x%04x,", packet.PID()),
+						err)
+				}
+				continue
+			}
+
 			if buffer.isFull() {
 				s.pid = packet.PID()
+				// log.Println(len(buffer.current))
 				return true
 			}
 		} else if ok {
@@ -230,15 +262,11 @@ func (s *TableScanner) Scan() bool {
 	return false
 }
 
-func (s *TableScanner) Bytes() []byte {
+func (s *TableScanner) Table() Table {
 	buffer, ok := s.buffers[s.pid]
 	if ok && buffer.isFull() {
-		return buffer.Bytes()
+		return Table(buffer.Table())
 	}
 
 	return nil
-}
-
-func (s *TableScanner) Table() Table {
-	return Table(s.Bytes())
 }

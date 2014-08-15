@@ -1,5 +1,14 @@
 package tsparser
 
+import (
+	"errors"
+)
+
+var (
+	ErrInvalidTableLength   = errors.New("Invalid table length")
+	ErrInvalidSectionLength = errors.New("Invalid value of section_length")
+)
+
 type TableId uint8
 
 const (
@@ -20,8 +29,27 @@ func (t Table) PrivateIndicator() bool {
 	return t[1]&0x40 > 0
 }
 
-func (t Table) SectionLength() uint16 {
-	return uint16(t[1]&0x0f)<<8 | uint16(t[2])
+func (t Table) dataStartsAt() int {
+	start := 3
+	if t.SectionSyntaxIndicator() {
+		start += 5
+	}
+
+	return start
+}
+
+func (t Table) dataEndsAt() int {
+	end := t.SectionLength() + 3
+	if t.SectionSyntaxIndicator() {
+		end -= 4
+	}
+
+	return end
+}
+
+func (t Table) SectionLength() int {
+	length := int(t[1]&0x0f)<<8 | int(t[2])
+	return length
 }
 
 func (t Table) TableIdExtension() uint16 {
@@ -66,23 +94,27 @@ func (t Table) LastSectionNumber() uint8 {
 
 func (t Table) CRC32() []byte {
 	if t.SectionSyntaxIndicator() {
-		length := t.SectionLength()
-		return t[length-1 : length+3]
+		end := t.dataEndsAt()
+		return t[end : end+4]
 	}
 
 	return nil
 }
 
 func (t Table) Data() []byte {
-	start := 3
-	if t.SectionSyntaxIndicator() {
-		start += 5
+	return t[t.dataStartsAt():t.dataEndsAt()]
+}
+
+func (t Table) validate() error {
+	if len(t) < 3 {
+		return ErrInvalidTableLength
 	}
 
-	end := int(t.SectionLength()) + 3
-	if t.SectionSyntaxIndicator() {
-		end -= 4
+	start := t.dataStartsAt()
+	end := t.dataEndsAt()
+	if start > end || len(t) < end {
+		return ErrInvalidSectionLength
 	}
 
-	return t[start:end]
+	return nil
 }
