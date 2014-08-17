@@ -8,7 +8,8 @@ import (
 )
 
 var (
-	ErrInvalidPointer = errors.New("Invalid value of pointer_field")
+	ErrInvalidPointer  = errors.New("Invalid value of pointer_field")
+	ErrPacketScrambled = errors.New("Scrambled")
 )
 
 const (
@@ -226,10 +227,26 @@ func NewTableScanner(s PacketStream, l *log.Logger) *TableScanner {
 	}
 }
 
+func (s *TableScanner) log(p Packet, v ...interface{}) {
+	if s.logger == nil {
+		return
+	}
+
+	values := make([]interface{}, len(v)+1)
+	values[0] = fmt.Sprintf("pid=0x%04x: ", p.PID())
+	copy(values[1:], v)
+	s.logger.Print(values...)
+}
+
 func (s *TableScanner) Scan() bool {
 	for s.s.Scan() {
 		packet := s.s.Packet()
 		if !packet.HasPayload() {
+			continue
+		}
+
+		if packet.transportScramblingControl() > 0 {
+			s.log(packet, ErrPacketScrambled)
 			continue
 		}
 
@@ -241,17 +258,12 @@ func (s *TableScanner) Scan() bool {
 
 		if packet.payloadUnitStartIndicator() {
 			if err := buffer.Begin(packet.Payload()); err != nil {
-				if s.logger != nil {
-					s.logger.Println(
-						fmt.Sprintf("pid = 0x%04x,", packet.PID()),
-						err)
-				}
+				s.log(packet, err)
 				continue
 			}
 
 			if buffer.isFull() {
 				s.pid = packet.PID()
-				// log.Println(len(buffer.current))
 				return true
 			}
 		} else if ok {
