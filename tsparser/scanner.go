@@ -187,7 +187,6 @@ func (b *tableScannerBuffer) Begin(payload []byte) (err error) {
 			b.extend(payload[1 : 1+pointerField])
 		}
 		payload = payload[1+pointerField:]
-
 	}
 
 	err = b.freeze()
@@ -243,9 +242,7 @@ func (s *TableScanner) Scan() bool {
 		packet := s.s.Packet()
 		if !packet.HasPayload() {
 			continue
-		}
-
-		if packet.transportScramblingControl() > 0 {
+		} else if packet.transportScramblingControl() > 0 {
 			s.log(packet, ErrPacketScrambled)
 			continue
 		}
