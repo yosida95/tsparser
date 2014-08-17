@@ -10,6 +10,7 @@ import (
 var (
 	ErrInvalidPointer  = errors.New("Invalid value of pointer_field")
 	ErrPacketScrambled = errors.New("Scrambled")
+	ErrPacketDropped   = errors.New("Detected dropping packet")
 )
 
 const (
@@ -134,6 +135,7 @@ func (s *PacketScanner) Packet() Packet {
 
 type tableScannerBuffer struct {
 	data    []byte
+	lastCC  uint8
 	current Table
 	isPES   bool
 }
@@ -170,17 +172,24 @@ func (b *tableScannerBuffer) freeze() (err error) {
 	return
 }
 
-func (b *tableScannerBuffer) Begin(payload []byte) (err error) {
+func (b *tableScannerBuffer) Begin(cc uint8, payload []byte) (err error) {
 	packetStartCodePrefix := payload[0]<<16 | payload[1]<<8 | payload[2]
 	b.isPES = packetStartCodePrefix == 0x000001
+
+	cc, b.lastCC = b.lastCC, cc
+	if len(b.data) > 0 || cc != 0 { // exclude first call
+		if cc == b.lastCC { // resend
+			return
+		} else if (b.lastCC-cc) != 1 && (cc != 15 || b.lastCC != 0) {
+			return ErrPacketDropped
+		}
+	}
 
 	if !b.isPES {
 		pointerField := int(payload[0])
 		if pointerField > 182 {
 			b.clear()
-
-			err = ErrInvalidPointer
-			return
+			return ErrInvalidPointer
 		}
 
 		if len(b.data) > 0 {
@@ -195,12 +204,21 @@ func (b *tableScannerBuffer) Begin(payload []byte) (err error) {
 	return
 }
 
-func (b *tableScannerBuffer) Extend(payload []byte) {
+func (b *tableScannerBuffer) Extend(cc uint8, payload []byte) (err error) {
 	if len(b.data) == 0 {
 		return
 	}
 
+	cc, b.lastCC = b.lastCC, cc
+	if cc == b.lastCC { // resend
+		return
+	} else if (b.lastCC-cc) != 1 && (cc != 15 || b.lastCC != 0) {
+		err = ErrPacketDropped
+		return
+	}
+
 	b.extend(payload)
+	return
 }
 
 func (b *tableScannerBuffer) isFull() bool {
@@ -253,18 +271,19 @@ func (s *TableScanner) Scan() bool {
 			buffer = s.buffers[packet.PID()]
 		}
 
+		var err error
 		if packet.payloadUnitStartIndicator() {
-			if err := buffer.Begin(packet.Payload()); err != nil {
-				s.log(packet, err)
-				continue
-			}
-
-			if buffer.isFull() {
+			err = buffer.Begin(packet.continuityCounter(), packet.Payload())
+			if err == nil && buffer.isFull() {
 				s.pid = packet.PID()
 				return true
 			}
 		} else if ok {
-			buffer.Extend(packet.Payload())
+			err = buffer.Extend(packet.continuityCounter(), packet.Payload())
+		}
+
+		if err != nil {
+			s.log(packet, err)
 		}
 	}
 
