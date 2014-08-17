@@ -1,21 +1,48 @@
 package tsparser
 
+import (
+	"sort"
+)
+
+type PIDSlice []PID
+
+func (pids PIDSlice) Len() int {
+	return len(pids)
+}
+
+func (pids PIDSlice) Less(i, j int) bool {
+	return pids[i] < pids[j]
+}
+
+func (pids PIDSlice) Swap(i, j int) {
+	pids[i], pids[j] = pids[j], pids[i]
+}
+
+func (pids PIDSlice) Search(pid PID) int {
+	return sort.Search(len(pids), func(x int) bool {
+		return pids[x] >= pid
+	})
+}
+
 type PacketFilter struct {
 	s    PacketStream
-	pids []PID
+	pids PIDSlice
 	next Packet
 }
 
 func NewPacketFilter(s PacketStream, pids ...PID) *PacketFilter {
+	pidSlice := PIDSlice(pids)
+	sort.Sort(pidSlice)
+
 	return &PacketFilter{
 		s:    s,
-		pids: pids,
+		pids: pidSlice,
 	}
 }
 
 func (f *PacketFilter) isTarget(pid PID) bool {
-	return pid == 0x00 || pid == 0x14
-	return false
+	i := f.pids.Search(pid)
+	return f.pids.Len() > i && f.pids[i] == pid
 }
 
 func (f *PacketFilter) Scan() bool {
