@@ -96,13 +96,21 @@ func (t Table) LastSectionNumber() uint8 {
 	return uint8(t[7])
 }
 
-func (t Table) CRC32() []byte {
+func (t Table) CRC32() uint32 {
 	if t.SectionSyntaxIndicator() {
 		end := t.dataEndsAt()
-		return t[end : end+4]
+		return AsUint32(t[end : end+4])
 	}
 
-	return nil
+	return 0
+}
+
+func (t Table) CheckCRC() bool {
+	if t.SectionSyntaxIndicator() {
+		return CheckCRC32([]byte(t[0 : t.dataEndsAt()+4]))
+	}
+
+	return true
 }
 
 func (t Table) Data() []byte {
