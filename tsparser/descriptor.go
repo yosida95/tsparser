@@ -14,6 +14,20 @@ func ParseDescriptor(data []byte) (d Descriptor, length int) {
 	return
 }
 
+func ParseDescriptors(data []byte) []Descriptor {
+	result := make([]Descriptor, 0)
+	bytes := len(data)
+
+	for i := 0; i < bytes; {
+		d, spent := ParseDescriptor(data[i:bytes])
+		i += spent
+
+		result = append(result, d)
+	}
+
+	return result
+}
+
 func (d Descriptor) Tag() DescriptorTag {
 	return DescriptorTag(d[0])
 }
